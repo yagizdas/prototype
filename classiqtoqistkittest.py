@@ -1,42 +1,66 @@
 import networkx as nx
 import numpy as np
+import random
+from itertools import combinations
+from pyomo.environ import ConcreteModel, Var, Objective, Constraint, SolverFactory, Binary, maximize
 from qiskit import QuantumCircuit, transpile
 from qiskit.visualization import plot_histogram
-from qiskit_ibm_runtime import QiskitRuntimeService, Sampler
 from scipy.optimize import minimize
-from itertools import combinations
-import random
+from qiskit_ibm_runtime import QiskitRuntimeService
 
-# Initialize IBM Quantum service
-service = QiskitRuntimeService()
+service = QiskitRuntimeService(channel="ibm_quantum", token="4d675380adc3c0291ae0f7eebeb5011cf50f5ec7822256ec60f44a95eeae7a62ef3bed681f5b0ec3e8af0b30d7cb77445c71f13b9fbb90dbceb8d205dca56ad1")
 backend = service.backend(name = 'ibm_kyiv')  # Use a real quantum device if needed
 
-# Generate a random bipartite graph
-donors = 5
-recipients = 5
-nodes = donors + recipients
+# Define a bipartite graph (donors and recipients)
+donors = 4
+recipients = 4
 G = nx.complete_bipartite_graph(donors, recipients)
 
-# Assign random weights to the edges
+weighted = True
+
 for (u, v) in G.edges():
-    G.edges[u, v]['weight'] = random.uniform(0, 1)
+    if weighted:
+        w = random.uniform(0, 1)
+    else:
+        w = 1
+    G.edges[u, v]['weight'] = w
+
+
+model = ConcreteModel()
+
+# Decision variables: x[i,j] = 1 if donor i is matched with recipient j
+model.x = Var(G.edges(), within=Binary)
+
+# Objective function: maximize the total weight of connections
+def objective_rule(model):
+    return sum(G.edges[i, j]['weight'] * model.x[i, j] for i, j in G.edges())
+model.obj = Objective(rule=objective_rule, sense=maximize)  # Minimize negative, equivalent to maximize
+
+#Constraints: Each donor and recipient is matched only once
+def donor_constraint_rule(model, i):
+    return sum(model.x[i, j] for j in G.neighbors(i) if (i, j) in model.x) <= 1
+model.donor_constraint = Constraint(range(donors), rule=donor_constraint_rule)
+
+def recipient_constraint_rule(model, j):
+    return sum(model.x[i, j] for i in G.neighbors(j) if (i, j) in model.x) <= 1
+model.recipient_constraint = Constraint(range(donors, donors + recipients), rule=recipient_constraint_rule)
 
 # QAOA parameters
 depth = 8
 rep = 1000
-qubits = list(range(nodes))
+qubits = list(range(donors + recipients))
 
-# Initialize the quantum circuit with Hadamard gates
+# Initialization of the circuit (Hadamard gates)
 def initialization(qc, qubits):
     for q in qubits:
         qc.h(q)
 
 # Define the cost unitary
 def cost_unitary(qc, qubits, gamma):
-    for u, v in G.edges():
-        qc.cx(u, v)
-        qc.rz(2 * gamma * G[u][v]['weight'], v)
-        qc.cx(u, v)
+    for i, j in G.edges():
+        qc.cx(qubits[i], qubits[j])
+        qc.rz(2 * gamma * G.edges[i, j]['weight'], qubits[j])
+        qc.cx(qubits[i], qubits[j])
 
 # Define the mixer unitary
 def mixer_unitary(qc, qubits, beta):
@@ -45,10 +69,10 @@ def mixer_unitary(qc, qubits, beta):
 
 # Create the QAOA circuit
 def create_circuit(params):
-    gammas = params[0::2]
-    betas = params[1::2]
+    gammas = [j for i, j in enumerate(params) if i % 2 == 0]
+    betas = [j for i, j in enumerate(params) if i % 2 == 1]
 
-    qc = QuantumCircuit(nodes)
+    qc = QuantumCircuit(donors + recipients)
     initialization(qc, qubits)
 
     for d in range(depth):
@@ -58,47 +82,40 @@ def create_circuit(params):
     qc.measure_all()
     return qc
 
+
 # Define the cost function
 def cost_function(params):
     qc = create_circuit(params)
-    t_qc = transpile(qc, backend)
-    job = backend.run(t_qc, shots=rep)
+    transpiled_circuit = transpile(qc, backend)
+    job = backend.run(transpiled_circuit, shots=rep)
     result = job.result()
-    counts = result.get_counts(qc)
+    counts = result.get_counts()
 
     total_cost = 0
     for bitstring, count in counts.items():
         bit_list = [int(bit) for bit in bitstring]
-
-        for i, u in enumerate(qubits[:donors]):
-            for j, v in enumerate(qubits[donors:]):
-                if bit_list[u] and bit_list[v]:  # If both donor and recipient are connected
-                    total_cost += G[u][v]['weight'] * count
-                else:
-                    total_cost -= 1e6  # Penalize if a donor or recipient is connected to more than one
-
+        for i, j in G.edges():
+            total_cost += G.edges[i, j]['weight'] * 0.5 * ((1 - 2 * bit_list[i]) * (1 - 2 * bit_list[j]) - 1) * count
     total_cost = total_cost / rep
-    return -total_cost  # Minimize the negative cost
+    return total_cost
 
-# Perform optimization
+# Optimize using QAOA and Pyomo
 optimal_params = None
 optimal_val = np.inf
 
-for i in range(8):
-    init_params = np.random.uniform(-np.pi, np.pi, 2 * depth)
-    res = minimize(cost_function, x0=init_params, method="COBYLA", options={'maxiter': 200})
-    print(f"Iteration {i}: cost = {-res.fun}")
-
+for _ in range(8):
+    init = np.random.uniform(-np.pi, np.pi, 2 * depth)
+    res = minimize(cost_function, x0=init, method="COBYLA", options={'maxiter':200})
     if res.fun < optimal_val:
         optimal_params = res.x
         optimal_val = res.fun
 
 # Run the final circuit with the optimal parameters
 qc = create_circuit(optimal_params)
-t_qc = transpile(qc, backend)
-job = backend.run(t_qc, shots=rep)
+transpiled_circuit = transpile(qc, backend)
+job = backend.run(transpiled_circuit, shots=rep)
 result = job.result()
-counts = result.get_counts(qc)
+counts = result.get_counts()
 
 # Process the results
 quantum_preds = []
@@ -109,4 +126,20 @@ for bitstring in counts:
             temp.append(pos)
     quantum_preds.append(temp)
 
-print("Quantum predictions:", quantum_preds)
+# Calculate classical cuts for comparison
+sub_lists = []
+for i in range(donors + recipients + 1):
+    temp = [list(x) for x in combinations(G.nodes(), i)]
+    sub_lists.extend(temp)
+
+cut_classic = []
+for sub_list in sub_lists:
+    cut_classic.append(nx.algorithms.cuts.cut_size(G, sub_list, weight='weight'))
+
+cut_quantum = []
+for cut in quantum_preds:
+    cut_quantum.append(nx.algorithms.cuts.cut_size(G, cut, weight='weight'))
+
+print("Quantum mean cut:", np.mean(cut_quantum))
+print("Max classical cut:", np.max(cut_classic))
+print("Ratio:", np.mean(cut_quantum) / np.max(cut_classic))
