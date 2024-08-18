@@ -7,9 +7,12 @@ from qiskit import QuantumCircuit, transpile
 from qiskit.visualization import plot_histogram
 from scipy.optimize import minimize
 from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as Sampler
+from qiskit_ibm_runtime.fake_provider import FakeManilaV2
 
-service = QiskitRuntimeService(channel="ibm_quantum", token="4d675380adc3c0291ae0f7eebeb5011cf50f5ec7822256ec60f44a95eeae7a62ef3bed681f5b0ec3e8af0b30d7cb77445c71f13b9fbb90dbceb8d205dca56ad1")
-backend = service.backend(name = 'ibm_kyiv')  # Use a real quantum device if needed
+#service = QiskitRuntimeService(channel="ibm_quantum", token="4d675380adc3c0291ae0f7eebeb5011cf50f5ec7822256ec60f44a95eeae7a62ef3bed681f5b0ec3e8af0b30d7cb77445c71f13b9fbb90dbceb8d205dca56ad1")
+#backend = service.backend(name = 'ibm_kyiv')  # Use a real quantum device if needed
 
 # Define a bipartite graph (donors and recipients)
 donors = 4
@@ -85,11 +88,19 @@ def create_circuit(params):
 
 # Define the cost function
 def cost_function(params):
+
     qc = create_circuit(params)
-    transpiled_circuit = transpile(qc, backend)
-    job = backend.run(transpiled_circuit, shots=rep)
+
+    #yeni qiskit notasyonunda devre calistirmak icin boyle yapmak gerekiyor
+
+    pass_manager_circuit = generate_preset_pass_manager(backend=backend, optimization_level=1)
+    isa_circuit = pass_manager_circuit.run(qc)
+
+    cost_service = Sampler(backend)
+    job = cost_service.run([isa_circuit])
     result = job.result()
     counts = result.get_counts()
+    print(counts)
 
     total_cost = 0
     for bitstring, count in counts.items():
