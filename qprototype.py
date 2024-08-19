@@ -14,12 +14,16 @@ from qiskit_aer import AerSimulator
 
 #service = QiskitRuntimeService(channel="ibm_quantum", token="4d675380adc3c0291ae0f7eebeb5011cf50f5ec7822256ec60f44a95eeae7a62ef3bed681f5b0ec3e8af0b30d7cb77445c71f13b9fbb90dbceb8d205dca56ad1")
 #backend = service.backend(name = 'ibm_kyiv')  # Use a real quantum device if needed
-aer_sim = AerSimulator(max_parallel_shots=1)
-# Define a bipartite graph (donors and recipients)
-donors = 2
-recipients = 2
-G = nx.complete_bipartite_graph(donors, recipients)
 
+#Local simulator parameters
+aer_sim = AerSimulator(max_parallel_threads=10)
+
+
+# sorunlu graph
+donors = 4
+recipients = 3
+G = nx.complete_bipartite_graph(donors, recipients)
+nx.draw(G, with_labels = True)  
 weighted = True
 
 for (u, v) in G.edges():
@@ -28,6 +32,8 @@ for (u, v) in G.edges():
     else:
         w = 1
     G.edges[u, v]['weight'] = w
+
+
 
 
 model = ConcreteModel()
@@ -49,17 +55,20 @@ def recipient_constraint_rule(model, j):
     return sum(model.x[i, j] for i in G.neighbors(j) if (i, j) in model.x) <= 1
 model.recipient_constraint = Constraint(range(donors, donors + recipients), rule=recipient_constraint_rule)
 
+
+#QAOA KISMI 
+
 # QAOA parameters
 depth = 8
-rep = 100
+rep = 1000
 qubits = list(range(donors + recipients))
 
-# Initialization of the circuit (Hadamard gates)
+# Her qubit için bir hadamard gate
 def initialization(qc, qubits):
     for q in qubits:
         qc.h(q)
 
-# Define the cost unitary
+# Define the cost hamiltonian (CNOT,RZ,CNOT at bağlantılı nodes)
 def cost_unitary(qc, qubits, gamma):
     for i, j in G.edges():
         qc.cx(qubits[i], qubits[j])
@@ -91,7 +100,6 @@ def create_circuit(params):
 def cost_function(params):
 
     qc = create_circuit(params)
-
     #yeni qiskit notasyonunda devre calistirmak icin boyle yapmak gerekiyor
     transpiled_qc = transpile(qc, backend=aer_sim)
     job = aer_sim.run(qc, shots=rep)
@@ -99,7 +107,7 @@ def cost_function(params):
     counts = result.get_counts()
     #counts = result.quasi_dists[0].nearest_probability_distribution()
 
-    #print(counts)
+    #algoritma kısmı
     total_cost = 0
     for bitstring, count in counts.items():
         bit_list = [int(bit) for bit in bitstring]
@@ -108,9 +116,6 @@ def cost_function(params):
     total_cost = total_cost / rep
     return total_cost
 
-init = np.random.uniform(-np.pi, np.pi, 2 * depth)
-ab = cost_function(init)
-print(ab)
 
 # Optimize using QAOA and Pyomo
 optimal_params = None
@@ -129,6 +134,7 @@ transpiled_circuit = transpile(qc, backend=aer_sim)
 job = aer_sim.run(transpiled_circuit, shots=rep)
 result = job.result()
 counts = result.get_counts()
+print(counts)
 
 # Process the results
 quantum_preds = []
@@ -138,6 +144,9 @@ for bitstring in counts:
         if bit == '1':
             temp.append(pos)
     quantum_preds.append(temp)
+print(quantum_preds)
+
+
 
 # Calculate classical cuts for comparison
 sub_lists = []
@@ -152,6 +161,7 @@ for sub_list in sub_lists:
 cut_quantum = []
 for cut in quantum_preds:
     cut_quantum.append(nx.algorithms.cuts.cut_size(G, cut, weight='weight'))
+    print(cut_quantum)
 
 print("Quantum mean cut:", np.mean(cut_quantum))
 print("Max classical cut:", np.max(cut_classic))
