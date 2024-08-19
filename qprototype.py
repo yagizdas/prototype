@@ -8,15 +8,16 @@ from qiskit.visualization import plot_histogram
 from scipy.optimize import minimize
 from qiskit_ibm_runtime import QiskitRuntimeService
 from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
-from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as Sampler
-from qiskit_ibm_runtime.fake_provider import FakeManilaV2
+from qiskit_ibm_runtime import QiskitRuntimeService, Session, SamplerV2 as Sampler
+from qiskit_aer import AerSimulator
+
 
 #service = QiskitRuntimeService(channel="ibm_quantum", token="4d675380adc3c0291ae0f7eebeb5011cf50f5ec7822256ec60f44a95eeae7a62ef3bed681f5b0ec3e8af0b30d7cb77445c71f13b9fbb90dbceb8d205dca56ad1")
 #backend = service.backend(name = 'ibm_kyiv')  # Use a real quantum device if needed
-
+aer_sim = AerSimulator(max_parallel_shots=1)
 # Define a bipartite graph (donors and recipients)
-donors = 4
-recipients = 4
+donors = 2
+recipients = 2
 G = nx.complete_bipartite_graph(donors, recipients)
 
 weighted = True
@@ -50,7 +51,7 @@ model.recipient_constraint = Constraint(range(donors, donors + recipients), rule
 
 # QAOA parameters
 depth = 8
-rep = 1000
+rep = 100
 qubits = list(range(donors + recipients))
 
 # Initialization of the circuit (Hadamard gates)
@@ -92,16 +93,13 @@ def cost_function(params):
     qc = create_circuit(params)
 
     #yeni qiskit notasyonunda devre calistirmak icin boyle yapmak gerekiyor
-
-    pass_manager_circuit = generate_preset_pass_manager(backend=backend, optimization_level=1)
-    isa_circuit = pass_manager_circuit.run(qc)
-
-    cost_service = Sampler(backend)
-    job = cost_service.run([isa_circuit])
+    transpiled_qc = transpile(qc, backend=aer_sim)
+    job = aer_sim.run(qc, shots=rep)
     result = job.result()
     counts = result.get_counts()
-    print(counts)
+    #counts = result.quasi_dists[0].nearest_probability_distribution()
 
+    #print(counts)
     total_cost = 0
     for bitstring, count in counts.items():
         bit_list = [int(bit) for bit in bitstring]
@@ -109,6 +107,10 @@ def cost_function(params):
             total_cost += G.edges[i, j]['weight'] * 0.5 * ((1 - 2 * bit_list[i]) * (1 - 2 * bit_list[j]) - 1) * count
     total_cost = total_cost / rep
     return total_cost
+
+init = np.random.uniform(-np.pi, np.pi, 2 * depth)
+ab = cost_function(init)
+print(ab)
 
 # Optimize using QAOA and Pyomo
 optimal_params = None
@@ -123,8 +125,8 @@ for _ in range(8):
 
 # Run the final circuit with the optimal parameters
 qc = create_circuit(optimal_params)
-transpiled_circuit = transpile(qc, backend)
-job = backend.run(transpiled_circuit, shots=rep)
+transpiled_circuit = transpile(qc, backend=aer_sim)
+job = aer_sim.run(transpiled_circuit, shots=rep)
 result = job.result()
 counts = result.get_counts()
 
