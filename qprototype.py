@@ -156,21 +156,25 @@ def create_circuit(params):
 
 # Define the cost function
 def cost_function(params):
-
     qc = create_circuit(params)
-    #yeni qiskit notasyonunda devre calistirmak icin boyle yapmak gerekiyor
     transpiled_qc = transpile(qc, backend=aer_sim)
     job = aer_sim.run(transpiled_qc, shots=rep, noise_model=noise_model)
     result = job.result()
     counts = result.get_counts()
-    #counts = result.quasi_dists[0].nearest_probability_distribution()
-
-    #algoritma kısmı
+    
     total_cost = 0
     for bitstring, count in counts.items():
         bit_list = [int(bit) for bit in bitstring]
+        # Penalty for multiple connections
+        penalty = 0
+        for node in range(num_donors + num_receivers):
+            connected_edges = [1 if (bit_list[i] == 1 and bit_list[j] == 1) else 0 for i, j in B.edges() if i == node or j == node]
+            if sum(connected_edges) > 1:
+                penalty += sum(connected_edges) - 1  # Penalize multiple connections
+        
         for i, j in B.edges():
             total_cost += B.edges[i, j]['weight'] * 0.5 * ((1 - 2 * bit_list[i]) * (1 - 2 * bit_list[j]) - 1) * count
+        total_cost += penalty * 100  # Add the penalty to the total cost
     total_cost = total_cost / rep
     return total_cost
 
