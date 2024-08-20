@@ -1,4 +1,5 @@
 import networkx as nx
+import matplotlib.pyplot as plt
 import numpy as np
 import random
 from itertools import combinations
@@ -10,6 +11,72 @@ from qiskit_ibm_runtime import QiskitRuntimeService
 from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from qiskit_ibm_runtime import QiskitRuntimeService, Session, SamplerV2 as Sampler
 from qiskit_aer import AerSimulator
+from qiskit_aer.noise import NoiseModel, depolarizing_error
+
+# Number of Donors and Receivers
+num_donors = 4
+num_receivers = 3
+
+# Create integer-based node names
+donors = list(range(num_donors))  # [0, 1, 2, 3]
+receivers = list(range(num_donors, num_donors + num_receivers))  # [4, 5, 6]
+
+# Compatibility matrix where True means a match is possible
+# This can be based on medical data like blood type, etc.
+compatibility = {
+    (0, 4): True,
+    (0, 5): True,
+    (0, 6): True,
+    (1, 4): True,
+    (1, 5): True,
+    (1, 6): True,
+    (2, 4): True,
+    (2, 5): True,
+    (2, 6): True,
+    (3, 4): True,
+    (3, 5): True,
+    (3, 6): True,
+}
+# Create a bipartite graph
+B = nx.Graph()
+
+# Add nodes with the bipartite label
+B.add_nodes_from(donors, bipartite=0)
+B.add_nodes_from(receivers, bipartite=1)
+
+# Add edges based on compatibility
+for donor, receiver in compatibility:
+    if compatibility[(donor, receiver)]:
+        B.add_edge(donor, receiver)
+nx.draw(B, with_labels = True)  
+
+pos = {}
+
+# Assign positions to donors (left side)
+for i, donor in enumerate(donors):
+    pos[donor] = (-1, i)
+
+# Assign positions to receivers (right side)
+for i, receiver in enumerate(receivers):
+    pos[receiver] = (1, i)
+weighted = True
+for (u, v) in B.edges():
+    if weighted:
+        w = random.uniform(0, 1)
+    else:
+        w = 1
+    B.edges[u, v]['weight'] = w
+
+# Draw the graph
+plt.figure(figsize=(10, 7))
+edge_labels = nx.get_edge_attributes(B, 'weight')
+nx.draw(B, pos, with_labels=True, node_color='lightblue', edge_color='gray', node_size=3000, font_size=12, font_weight='bold')
+nx.draw_networkx_edge_labels(B, pos, edge_labels=edge_labels, font_color='red')
+plt.title("Bipartite Graph of Donors and Receivers with Weights", size=15)
+plt.show()
+
+
+
 
 
 #service = QiskitRuntimeService(channel="ibm_quantum", token="4d675380adc3c0291ae0f7eebeb5011cf50f5ec7822256ec60f44a95eeae7a62ef3bed681f5b0ec3e8af0b30d7cb77445c71f13b9fbb90dbceb8d205dca56ad1")
@@ -17,33 +84,24 @@ from qiskit_aer import AerSimulator
 
 #Local simulator parameters
 aer_sim = AerSimulator(max_parallel_threads=10)
-
+noise_model = NoiseModel()
+noise_model.add_all_qubit_quantum_error(depolarizing_error(0.01, 1), ['u3'])
 
 # sorunlu graph
-donors = 4
-recipients = 3
-G = nx.complete_bipartite_graph(donors, recipients)
-nx.draw(G, with_labels = True)  
+
+nx.draw(B, with_labels = True)  
 weighted = True
 
-for (u, v) in G.edges():
-    if weighted:
-        w = random.uniform(0, 1)
-    else:
-        w = 1
-    G.edges[u, v]['weight'] = w
-
-
-
-
+#PYOMO parametreleri
+'''
 model = ConcreteModel()
 
 # Decision variables: x[i,j] = 1 if donor i is matched with recipient j
-model.x = Var(G.edges(), within=Binary)
+model.x = Var(B.edges(), within=Binary)
 
 # Objective function: maximize the total weight of connections
 def objective_rule(model):
-    return sum(G.edges[i, j]['weight'] * model.x[i, j] for i, j in G.edges())
+    return sum(B.edges[i, j]['weight'] * model.x[i, j] for i, j in B.edges())
 model.obj = Objective(rule=objective_rule, sense=maximize)  # Minimize negative, equivalent to maximize
 
 #Constraints: Each donor and recipient is matched only once
@@ -54,14 +112,14 @@ model.donor_constraint = Constraint(range(donors), rule=donor_constraint_rule)
 def recipient_constraint_rule(model, j):
     return sum(model.x[i, j] for i in G.neighbors(j) if (i, j) in model.x) <= 1
 model.recipient_constraint = Constraint(range(donors, donors + recipients), rule=recipient_constraint_rule)
-
+'''
 
 #QAOA KISMI 
 
 # QAOA parameters
 depth = 8
 rep = 1000
-qubits = list(range(donors + recipients))
+qubits = list(range(num_donors + num_receivers))
 
 # Her qubit için bir hadamard gate
 def initialization(qc, qubits):
@@ -70,9 +128,9 @@ def initialization(qc, qubits):
 
 # Define the cost hamiltonian (CNOT,RZ,CNOT at bağlantılı nodes)
 def cost_unitary(qc, qubits, gamma):
-    for i, j in G.edges():
+    for i, j in B.edges():
         qc.cx(qubits[i], qubits[j])
-        qc.rz(2 * gamma * G.edges[i, j]['weight'], qubits[j])
+        qc.rz(2 * gamma * B.edges[i, j]['weight'], qubits[j])
         qc.cx(qubits[i], qubits[j])
 
 # Define the mixer unitary
@@ -85,7 +143,7 @@ def create_circuit(params):
     gammas = [j for i, j in enumerate(params) if i % 2 == 0]
     betas = [j for i, j in enumerate(params) if i % 2 == 1]
 
-    qc = QuantumCircuit(donors + recipients)
+    qc = QuantumCircuit(num_donors + num_receivers)
     initialization(qc, qubits)
 
     for d in range(depth):
@@ -102,7 +160,7 @@ def cost_function(params):
     qc = create_circuit(params)
     #yeni qiskit notasyonunda devre calistirmak icin boyle yapmak gerekiyor
     transpiled_qc = transpile(qc, backend=aer_sim)
-    job = aer_sim.run(qc, shots=rep)
+    job = aer_sim.run(transpiled_qc, shots=rep, noise_model=noise_model)
     result = job.result()
     counts = result.get_counts()
     #counts = result.quasi_dists[0].nearest_probability_distribution()
@@ -111,8 +169,8 @@ def cost_function(params):
     total_cost = 0
     for bitstring, count in counts.items():
         bit_list = [int(bit) for bit in bitstring]
-        for i, j in G.edges():
-            total_cost += G.edges[i, j]['weight'] * 0.5 * ((1 - 2 * bit_list[i]) * (1 - 2 * bit_list[j]) - 1) * count
+        for i, j in B.edges():
+            total_cost += B.edges[i, j]['weight'] * 0.5 * ((1 - 2 * bit_list[i]) * (1 - 2 * bit_list[j]) - 1) * count
     total_cost = total_cost / rep
     return total_cost
 
@@ -131,12 +189,13 @@ for _ in range(8):
 # Run the final circuit with the optimal parameters
 qc = create_circuit(optimal_params)
 transpiled_circuit = transpile(qc, backend=aer_sim)
-job = aer_sim.run(transpiled_circuit, shots=rep)
+job = aer_sim.run(transpiled_circuit, shots=rep, noise_model=noise_model)
 result = job.result()
 counts = result.get_counts()
 print(counts)
 
-# Process the results
+plot_histogram(counts)
+
 quantum_preds = []
 for bitstring in counts:
     temp = []
@@ -146,23 +205,21 @@ for bitstring in counts:
     quantum_preds.append(temp)
 print(quantum_preds)
 
-
-
 # Calculate classical cuts for comparison
 sub_lists = []
-for i in range(donors + recipients + 1):
-    temp = [list(x) for x in combinations(G.nodes(), i)]
+for i in range(num_donors + num_receivers + 1):
+    temp = [list(x) for x in combinations(B.nodes(), i)]
     sub_lists.extend(temp)
 
 cut_classic = []
 for sub_list in sub_lists:
-    cut_classic.append(nx.algorithms.cuts.cut_size(G, sub_list, weight='weight'))
+    cut_classic.append(nx.algorithms.cuts.cut_size(B, sub_list, weight='weight'))
 
 cut_quantum = []
 for cut in quantum_preds:
-    cut_quantum.append(nx.algorithms.cuts.cut_size(G, cut, weight='weight'))
+    cut_quantum.append(nx.algorithms.cuts.cut_size(B, cut, weight='weight'))
     print(cut_quantum)
 
-print("Quantum mean cut:", np.mean(cut_quantum))
+print("Quantum mean cut:", np.max(cut_quantum))
 print("Max classical cut:", np.max(cut_classic))
-print("Ratio:", np.mean(cut_quantum) / np.max(cut_classic))
+print("Ratio:", np.max(cut_quantum) / np.max(cut_classic))
