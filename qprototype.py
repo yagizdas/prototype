@@ -13,7 +13,6 @@ from qiskit_ibm_runtime import QiskitRuntimeService, Session, SamplerV2 as Sampl
 from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel, depolarizing_error
 
-# Number of Donors and Receivers
 num_donors = 4
 num_receivers = 3
 
@@ -21,8 +20,7 @@ num_receivers = 3
 donors = list(range(num_donors))  # [0, 1, 2, 3]
 receivers = list(range(num_donors, num_donors + num_receivers))  # [4, 5, 6]
 
-# Compatibility matrix where True means a match is possible
-# This can be based on medical data like blood type, etc.
+# Compatibility matrix declaring the possible edges
 compatibility = {
     (0, 4): True,
     (0, 5): True,
@@ -52,11 +50,11 @@ nx.draw(B, with_labels = True)
 
 pos = {}
 
-# Assign positions to donors (left side)
+# Assign positions to donors
 for i, donor in enumerate(donors):
     pos[donor] = (-1, i)
 
-# Assign positions to receivers (right side)
+# Assign positions to receivers 
 for i, receiver in enumerate(receivers):
     pos[receiver] = (1, i)
 weighted = True
@@ -75,24 +73,22 @@ nx.draw_networkx_edge_labels(B, pos, edge_labels=edge_labels, font_color='red')
 plt.title("Bipartite Graph of Donors and Receivers with Weights", size=15)
 plt.show()
 
-
-
-
-
+#this part is not used because of Aer simulator being utilized while simulating
+'''
 #service = QiskitRuntimeService(channel="ibm_quantum", token="4d675380adc3c0291ae0f7eebeb5011cf50f5ec7822256ec60f44a95eeae7a62ef3bed681f5b0ec3e8af0b30d7cb77445c71f13b9fbb90dbceb8d205dca56ad1")
 #backend = service.backend(name = 'ibm_kyiv')  # Use a real quantum device if needed
+'''
 
-#Local simulator parameters
+#local simulator parameters
 aer_sim = AerSimulator(max_parallel_threads=10)
+#optional noise model
 noise_model = NoiseModel()
 noise_model.add_all_qubit_quantum_error(depolarizing_error(0.01, 1), ['u3'])
-
-# sorunlu graph
 
 nx.draw(B, with_labels = True)  
 weighted = True
 
-#PYOMO parametreleri
+#PYOMO parameters(not sure if it will be used)
 '''
 model = ConcreteModel()
 
@@ -114,26 +110,26 @@ def recipient_constraint_rule(model, j):
 model.recipient_constraint = Constraint(range(donors, donors + recipients), rule=recipient_constraint_rule)
 '''
 
-#QAOA KISMI 
-
-# QAOA parameters
+#declaring depth rep and qubit size
 depth = 8
 rep = 1000
 qubits = list(range(num_donors + num_receivers))
 
-# Her qubit için bir hadamard gate
+# Creating the quantum circuit
+
+#hadamard gate
 def initialization(qc, qubits):
     for q in qubits:
         qc.h(q)
 
-# Define the cost hamiltonian (CNOT,RZ,CNOT at bağlantılı nodes)
+#Cost hamiltonian 
 def cost_unitary(qc, qubits, gamma):
     for i, j in B.edges():
         qc.cx(qubits[i], qubits[j])
         qc.rz(2 * gamma * B.edges[i, j]['weight'], qubits[j])
         qc.cx(qubits[i], qubits[j])
 
-# Define the mixer unitary
+# Define the mixer hamiltonian
 def mixer_unitary(qc, qubits, beta):
     for q in qubits:
         qc.rx(2 * beta, q)
@@ -153,8 +149,25 @@ def create_circuit(params):
     qc.measure_all()
     return qc
 
-
 # Define the cost function
+def cost_function(params):
+
+    qc = create_circuit(params)
+    transpiled_qc = transpile(qc, backend=aer_sim)
+    job = aer_sim.run(transpiled_qc, shots=rep, noise_model=noise_model)
+    result = job.result()
+    counts = result.get_counts()
+
+    total_cost = 0
+    for bitstring, count in counts.items():
+        bit_list = [int(bit) for bit in bitstring]
+        for i, j in B.edges():
+            total_cost += B.edges[i, j]['weight'] * 0.5 * ((1 - 2 * bit_list[i]) * (1 - 2 * bit_list[j]) - 1) * count
+    total_cost = total_cost / rep
+    return total_cost
+
+#we planned about penalizing solutions which contains nodes getting connected one more than once, but soleley using this implementation is not really worked (or at least thats what we understood from it.)
+'''
 def cost_function(params):
     qc = create_circuit(params)
     transpiled_qc = transpile(qc, backend=aer_sim)
@@ -178,8 +191,10 @@ def cost_function(params):
     total_cost = total_cost / rep
     return total_cost
 
+'''
 
-# Optimize using QAOA and Pyomo
+
+# Optimizing using COBYLA and getting optional gamma and beta values
 optimal_params = None
 optimal_val = np.inf
 
@@ -200,6 +215,7 @@ print(counts)
 
 plot_histogram(counts)
 
+#getting qubits' locations with an output of 1
 quantum_preds = []
 for bitstring in counts:
     temp = []
@@ -219,11 +235,13 @@ cut_classic = []
 for sub_list in sub_lists:
     cut_classic.append(nx.algorithms.cuts.cut_size(B, sub_list, weight='weight'))
 
+#calculatingquantum cuts
 cut_quantum = []
 for cut in quantum_preds:
     cut_quantum.append(nx.algorithms.cuts.cut_size(B, cut, weight='weight'))
     print(cut_quantum)
 
+#comparison(we are not sure about getting mean or max of our quantum circuit's output here)
 print("Quantum mean cut:", np.max(cut_quantum))
 print("Max classical cut:", np.max(cut_classic))
 print("Ratio:", np.max(cut_quantum) / np.max(cut_classic))
